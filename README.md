@@ -41,11 +41,10 @@ It is meant to be used with software guitar amp-sims. I use it with NeuralDSP pl
  Pedals: Channel 3, notes = 36, 37, 38
  LOOPER mode: Channel 3, notes = 40, 41, 42
  
- Firmware version 0.17
- 
- First feature-complete version with all switches enabled
+ Firmware version 0.17 - First feature-complete version with all switches enabled
  
  todo: 
  - screensaver: na 60min zonder op een knop te drukken gaat het scherm op zwart, of een screensaver animatie na 5min
  - een diode tussen schermvoeding en vcc tbv voltage drop
- * 
+ - maybe a way to keep all 4 controllers available for FX and presets, this would mean the controller function would need to entered with a double-tap, long-press or other way.
+   It would also have to deal with not triggering the FX pedal when you just want to go into the menu. For now I like the simplicity of a dedicated control button
