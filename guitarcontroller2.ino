@@ -1,14 +1,8 @@
-#include <Adafruit_GrayOLED.h>
-#include <Adafruit_SPITFT.h>
-#include <Adafruit_SPITFT_Macros.h>
-#include <Adafruit_GFX.h>
-#include <gfxfont.h>
+
 
 /*
- * Guitar MIDI controller software
+ * Firmware for XAD GC1: A Guitar MIDI controller
  * Created in 2024 by Alexander Adema
- * 
- * This code is not particularly clean, clever or optimized, it was being written before making decisions about controls and what I wanted it to do. It needs atleast a round of clean-up though.
  * 
  * This software controls a MIDI interface designed to control guitar software such as ampsims (change preset, control individual effects; looper)
  * It is designed for an Arduino Micro Pro controller, It can be run as-is on some other Arduino's but not all, dyor. 
@@ -30,7 +24,7 @@
  * - an OLED display that shows the current mode and preset, and flashes up when a pedal is pressed, as feedback that this switch is activated
  * 
  * I have kept the control mechanism as simple as possible, to facilitate ease of use over maximizing options. For that reason there are at the moment no double-tap functions or for pressing two 
- * buttons at once, etc. 
+ * buttons at once, etc. I did implement it but the added complication of operating was not worth the extra mappable switch.
  * I have also considered adding a small OLED below each button as a dynamic label. But since there is no universal way to get the current preset, pedal status etc from plugins, their
  * functionality would be limited. For this reason there are also no status LEDs for the pedals since we don't know whether it's switching the pedal on or off.
  * 
@@ -46,42 +40,64 @@
  * 
  * Bank A preset 1-3: Program Change on Channel 2, Program 2-4
  * Bank B preset 1-3 PC Channel 2, program 5-7
- * Pedals: Channel 3, notes = 36, 37, 38
- * LOOPER mode: Channel 3, notes = 40, 41, 42
+ * Pedals: Channel 3, notes = 37 (C#3), 38 (D3), 39 (D#3)
+ * LOOPER mode: Channel 3, notes = 40 (E3), 41 (F3), 42 (F#3) - Asssign to Play/Stop, Record/Overdub, Clear last
  * 
- * Firmware version 0.17
- * 
- * First feature-complete version with all switches enabled
- * 
+ * Firmware version 
+ * 0.17 - First feature-complete version with all switches enabled
+ * 0.18 - corrected output notes
+ * 0.19 - screensaver added since the OLED seems pretty prone to burn-in
  * todo: 
  *  * - screensaver: na 60min zonder op een knop te drukken gaat het scherm op zwart, of een screensaver animatie na 5min
  * - een diode tussen schermvoeding en vcc tbv voltage drop
  * 
 */
 
+///////////////////
+// Includes
+///////////////////
 
+#include <Adafruit_GrayOLED.h>
+#include <Adafruit_SPITFT.h>
+#include <Adafruit_SPITFT_Macros.h>
+#include <Adafruit_GFX.h>
+#include <gfxfont.h>
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_SH110X.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/fontbig.h>  // this custom font contains a small subset of 
 
-#define PROGVERSION 0.17
+// custom/local libraries
+#include "MIDIUSB.h"
+#include <ResponsiveAnalogRead.h>  // [https://github.com/dxinteractive/ResponsiveAnalogRead](https://github.com/dxinteractive/ResponsiveAnalogRead)
+
+//////////////////
+// defines
+//////////////////
+
+#define PROGVERSION 0.21
 #define i2c_Address 0x3c  // address of the OLED display
 #define SCREEN_WIDTH 128 // OLED display width in pixels
 #define SCREEN_HEIGHT 64 // OLED display height in pixels
 #define OLED_RESET -1   //   QT-PY / XIAO
 Adafruit_SH1106G display = Adafruit_SH1106G(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);  
+#define screensaverTimeout 400000   // 6 minutes
 
-#define ATMEGA32U4 1  // put here the uC you are using, like in the lines above followed by "1", like "ATMEGA328 1", "DEBUG 1", etc.
-
+#define LONGPRESS 750   //750ms = control
 #define expPin A0   // the input pin for the expression pedal, this connects to tip, sleeve is 5v and base is ground (check)
+
+
+//////////////////////////
+// Global variables
+//////////////////////////
 
 // The controller mode:
 // 0 = fx control
 // 1 = preset bank A
 // 2 = preset bank B
 // 3 = looper
+
 byte controllerMode = 0;
 char currentBank[] = "A"; // actual current bank
 char visibleBank[] = "A"; // placeholder for selection
@@ -90,7 +106,6 @@ bool controllerWaiting = false;
 bool loopMode = false;
 bool controllerHush = false;
 
-int screensaverTimeoutMin = 5;
 unsigned long lastButtonPress = 0;
 
 //const int POT_THRESHOLD = 3;   
@@ -102,16 +117,8 @@ int tempAnalog = 0;
 
 
 /////////////////////////////////////////////
-// LIBRARIES
-
-#include "MIDIUSB.h"
-#include <ResponsiveAnalogRead.h>  // [https://github.com/dxinteractive/ResponsiveAnalogRead](https://github.com/dxinteractive/ResponsiveAnalogRead)
-
-// ---- //
-
-/////////////////////////////////////////////
 // BUTTONS
-
+/////////////////////////////////////////////
 
 const int N_BUTTONS = 4;                                //  total numbers of buttons
 const int BUTTON_ARDUINO_PIN[N_BUTTONS] = { 8,5,4,6 };  // pins of each button connected straight to the Arduino
@@ -130,6 +137,7 @@ unsigned long debounceDelay = 150;                   // the debounce time; incre
 
 /////////////////////////////////////////////
 // EXPRESSION PEDAL
+/////////////////////////////////////////////
 
 
 const int N_POTS = 1;                            // total numbers of pots (slide & rotary)
@@ -204,7 +212,7 @@ void updatescreen()
     display.setCursor(1, 17);
     display.println("Looper");
     //  display.setFont();
-    display.setCursor(1, 58);
+    display.setCursor(1, 56);
     display.println("Ply|Rec|Clr");
   }
   display.invertDisplay(false);
@@ -222,15 +230,23 @@ void showpedalpress(byte pedal, bool looping) {
     display.clearDisplay();
     display.setTextSize(3);
     display.setCursor(20, 10);
+  
+      display.setFont(&FreeSans12pt7b);
+  display.setTextSize(1);
+  display.setCursor(20,25);
+  
     if (looping == false) { display.println("PEDAL"); } else { 
-      if (pedal == 1) { display.println("PLAY"); } else
-      if (pedal == 2) { display.print("REC"); }
+      if (pedal == 1) { display.println(" PLAY"); } else
+      if (pedal == 2) { display.print("RECORD"); } else
+      if (pedal == 3) { display.print("CLEAR"); } 
     }
     display.setCursor(55, 36);
+    display.setCursor(50, 48);    
     if (looping == false) { display.println(String(pedal)); }
-    display.invertDisplay(true);
+    if (not looping) { display.invertDisplay(true); }
     display.display();
     delay(100);
+ //   if (looping) { delay(500); }
  }
 
 
@@ -265,8 +281,7 @@ void programChange(byte channel, byte program) {
 void buttons()
 {
   byte midiProgram = 0;
-
-  controllerHush = false; // start sending notes again
+  bool controllerHush = false;  
 
   for (int i = 0; i < N_BUTTONS; i++)
   {
@@ -280,17 +295,17 @@ void buttons()
     if ((millis() - lastDebounceTime[i]) > debounceDelay)
     { // its a new event
 
+
+// voor beide:      if ((i >= 1 && i <= 3) && buttonCState[i] == LOW)
+// dit werkt wel maar alleen als de 2e knop eerst wordt ingedrukt, niet andersom.
+
       if (buttonPState[i] != buttonCState[i])
       { // state has changed
         lastDebounceTime[i] = millis();
+        lastButtonPress = millis();
 
-        if (millis() > lastButtonPress)
-        {
-          lastButtonPress = millis();
-        }
-
-        if (i == 0 && buttonCState[i] == LOW)
-        {                                     // controller knop is ingedrukt
+        if (i == 0 && (buttonCState[i] == LOW))   // #0: controller knop is ingedrukt
+        {                                     
           controllerWaiting = false;
           controllerMode++;
           if (controllerMode == 4)
@@ -299,11 +314,11 @@ void buttons()
             controllerMode = 0;
             controllerHush = true;
           }
-          else if (controllerMode == 3)
+          else if (controllerMode == 3)   // #3: entering loop mode
           {
             loopMode = true;
           } else
-          if (controllerMode == 1)
+          if (controllerMode == 1)        // #1, #2: wait for selection from bank
           {
             strcpy(visibleBank, "A");
             controllerWaiting = true;
@@ -313,8 +328,6 @@ void buttons()
             strcpy(visibleBank, "B");
             controllerWaiting = true;
           }
-
-     //     Serial.print("Mode: " + String(controllerMode) + " Bank: " + String(currentBank) + "\n");
           updatescreen();
         }
 
@@ -341,12 +354,12 @@ void buttons()
           else if (loopMode == true)
           {
             showpedalpress(i, true);
-            noteOn(midiCh, note + i + 10, 127); // channel, note, velocity
+            noteOn(midiCh, note + i + 3, 127); // channel, note, velocity
             MidiUSB.flush();
             delay(10);
-            noteOn(midiCh, note + i + 10, 0); // channel, note, velocity
+            noteOn(midiCh, note + i + 3, 0); // channel, note, velocity
             MidiUSB.flush();
-            updatescreen();
+          // !!!!!  updatescreen();
             // showpedalpress(i+1);
           }
         //  Serial.print("Mode: " + String(controllerMode) + " Bank: " + String(currentBank) + " Preset: " + String(currentPreset) + "\n");
@@ -360,20 +373,18 @@ void buttons()
 
             // Sends the MIDI note ON accordingly to the chosen board
 
-            // use if using with ATmega32U4 (micro, pro micro, leonardo...)
+
             if (controllerMode == 0 && controllerHush == false)
-            { // we're controlling pedals
+            {                                                     // we're controlling pedals
 
               noteOn(midiCh, note + i, 127); // channel, note, velocity
               MidiUSB.flush();
               showpedalpress(i, false);
+              controllerHush == true;
             }
 
-            // #ifdef DEBUG
-      //      Serial.print(i);
-      //      Serial.println(": button on");
      //       Serial.println("controllerMode=" + String(controllerMode));
-            // #endif
+
           }
           else
           { // pedal up; release note
@@ -381,14 +392,10 @@ void buttons()
             // Sends the MIDI note OFF accordingly to the chosen board
             if (controllerMode == 0 && controllerHush == false)
             {                              // we're controlling pedals
-              noteOn(midiCh, note + i, 0); // channel, note, velocity
+              noteOn(midiCh, note + i, 0);} // channel, note, velocity
               MidiUSB.flush();
               updatescreen();
-            }
-#ifdef DEBUG
- //           Serial.print(i);
- //           Serial.println(": button off" + "\n");
-#endif
+
           }
           buttonPState[i] = buttonCState[i];
         }
@@ -433,6 +440,7 @@ void potentiometers() {
     //          MIDI control change number 11
     //          Change this to change control the change number)
     controlChange(1, 11, tempAnalog);
+    
     // !Important, Flush after send
     MidiUSB.flush();
   }      
@@ -444,26 +452,36 @@ void potentiometers() {
 /////////////////////////////////////////////
 // SETUP
 void setup() {
+  lastButtonPress = millis();
 
 
   // 31250 for MIDI class compliant | 115200 for Hairless MIDI
-  Serial.begin(31250);  
+  Serial.begin(31250);  // we tryna comply ye
 
   delay(250); // wait for the OLED to power up
   display.begin(i2c_Address, true); // Address 0x3C default
+  display.clearDisplay();
+  display.display();
+  delay(2000);
+//  display.dim(true);
   display.clearDisplay(); // cleear buffer
   display.setContrast (0); // dim display 0..255 somehow doesnt get very dim
   display.setFont(&FreeSans12pt7b);
   display.setTextSize(1);
   display.setCursor(1,17);
   display.setTextColor(SH110X_WHITE);
-  display.print("v");
+  display.print("XAD gc1");
+  display.setCursor(1,47);  
+  display.setFont();
+  display.setTextSize(2);
+  display.print("FW: v");
   display.println(String(PROGVERSION));  
   
   display.display();
 
-  delay(1500);
+  delay(2000);
  // Serial.println("v"+String(PROGVERSION));
+display.setContrast (0); // dim display
 
   updatescreen();
 
@@ -491,9 +509,9 @@ void loop() {
   buttons();
   potentiometers();
 
-       //if (((millis() - lastButtonPress)*1000*60) > screensaverTimeoutMin) {     // activate screensaver
-         //display.clearDisplay();
-         //display.display();
-        // delay(250);
-      // }  
+       if ((millis() - lastButtonPress) > screensaverTimeout) {     // activate screensaver
+         display.clearDisplay();
+         display.display();
+         delay(250);
+       }  
 }
