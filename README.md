@@ -1,6 +1,7 @@
 # guitarMIDI - MIDI controller for guitarists
 Guitar MIDI controller by Alexander Adema
 
+![alt text](https://i.imgur.com/4cK6FE3.png)
 
 This software controls a MIDI interface designed to control guitar software such as ampsims (change preset, control individual effects; looper)
 It is designed for an Arduino Micro Pro controller, It can be run as-is on some other Arduino's but not all, dyor. 
