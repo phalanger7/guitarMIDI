@@ -1,5 +1,5 @@
 # guitarMIDI - MIDI controller for guitarists
-Guitar MIDI controller by Alexander Adema
+Guitar MIDI controller by Alexander A
 
 ![alt text](https://i.imgur.com/4cK6FE3.png)
 
